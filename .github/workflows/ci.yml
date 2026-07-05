@@ -1,0 +1,78 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+
+  helm-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: helm lint deploy/chart/event-pipeline
+      - run: helm template smoke deploy/chart/event-pipeline > /dev/null
+
+  # The real proof: build the images, stand up a throwaway Kubernetes cluster
+  # inside the runner, deploy the chart, and drive traffic through the whole
+  # pipeline. Nothing stays running after CI — the green badge is the demo.
+  e2e:
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build images
+        run: |
+          docker build --build-arg SERVICE=ingest-api -t event-pipeline/ingest-api:ci .
+          docker build --build-arg SERVICE=worker -t event-pipeline/worker:ci .
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: e2e
+
+      - name: Load images into kind
+        run: kind load docker-image event-pipeline/ingest-api:ci event-pipeline/worker:ci --name e2e
+
+      - name: Deploy chart
+        run: |
+          helm install event-pipeline deploy/chart/event-pipeline \
+            --set image.repository=event-pipeline \
+            --set image.tag=ci \
+            --set image.pullPolicy=Never \
+            --wait --timeout 180s
+
+      - name: Smoke test through the Service
+        run: |
+          kubectl port-forward svc/ingest-api 18080:80 &
+          sleep 3
+          ./hack/smoke.sh http://localhost:18080
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get pods -o wide
+          kubectl describe pods
+          kubectl logs -l app.kubernetes.io/part-of=event-pipeline --all-containers --tail=100 || true

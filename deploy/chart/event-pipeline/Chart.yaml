@@ -1,0 +1,8 @@
+apiVersion: v2
+name: event-pipeline
+description: >-
+  Event ingestion pipeline: HTTP ingest API -> Redis Stream -> aggregation
+  worker, with Prometheus metrics on every component.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

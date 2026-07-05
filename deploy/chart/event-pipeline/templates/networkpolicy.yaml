@@ -1,0 +1,25 @@
+{{- if .Values.networkPolicy.enabled }}
+# Redis accepts traffic only from the two services that legitimately need it.
+# Everything else in the namespace (or a compromised neighbour) is cut off.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-ingress
+  labels:
+    {{- include "event-pipeline.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: ["ingest-api", "worker"]
+      ports:
+        - protocol: TCP
+          port: 6379
+{{- end }}

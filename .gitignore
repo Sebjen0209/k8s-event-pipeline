@@ -1,0 +1,8 @@
+# binaries
+/ingest-api
+/worker
+*.exe
+
+# local tooling output
+/dist
+coverage.out

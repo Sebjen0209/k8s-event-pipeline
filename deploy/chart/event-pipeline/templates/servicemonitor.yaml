@@ -1,0 +1,18 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+# Prometheus Operator integration — off by default because it requires the
+# ServiceMonitor CRD to exist in the cluster.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: event-pipeline
+  labels:
+    {{- include "event-pipeline.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: event-pipeline
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+{{- end }}

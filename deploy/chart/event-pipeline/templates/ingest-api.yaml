@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingest-api
+  labels:
+    app.kubernetes.io/name: ingest-api
+    {{- include "event-pipeline.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.ingestApi.hpa.enabled }}
+  replicas: {{ .Values.ingestApi.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ingest-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ingest-api
+        {{- include "event-pipeline.labels" . | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      securityContext:
+        {{- include "event-pipeline.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: ingest-api
+          image: "{{ .Values.image.repository }}/ingest-api:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "event-pipeline.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: REDIS_ADDR
+              value: redis:6379
+            - name: STREAM_NAME
+              value: {{ .Values.stream.name | quote }}
+            - name: STREAM_MAXLEN
+              value: {{ .Values.stream.maxLen | quote }}
+          # Liveness only checks the process; readiness also checks Redis so a
+          # pod that lost its backend is pulled from the Service, not restarted.
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.ingestApi.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingest-api
+  labels:
+    app.kubernetes.io/name: ingest-api
+    {{- include "event-pipeline.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: ingest-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+{{- if .Values.ingestApi.hpa.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ingest-api
+  labels:
+    {{- include "event-pipeline.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ingest-api
+  minReplicas: {{ .Values.ingestApi.hpa.minReplicas }}
+  maxReplicas: {{ .Values.ingestApi.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.ingestApi.hpa.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- if .Values.ingestApi.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ingest-api
+  labels:
+    {{- include "event-pipeline.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.ingestApi.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ingest-api
+{{- end }}
