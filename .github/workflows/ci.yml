@@ -68,7 +68,7 @@ jobs:
         run: |
           kubectl port-forward svc/ingest-api 18080:80 &
           sleep 3
-          ./hack/smoke.sh http://localhost:18080
+          bash hack/smoke.sh http://localhost:18080
 
       - name: Diagnostics on failure
         if: failure()
