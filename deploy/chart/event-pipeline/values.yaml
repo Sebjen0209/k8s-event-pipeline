@@ -51,3 +51,12 @@ metrics:
   serviceMonitor:
     # Requires the Prometheus Operator CRDs in the cluster.
     enabled: false
+  prometheusRule:
+    # Ships the alert rules from rules/alerts.yaml as a PrometheusRule.
+    # Requires the Prometheus Operator CRDs in the cluster.
+    enabled: false
+
+tracing:
+  # OTLP/HTTP endpoint for traces (e.g. http://otel-collector:4318).
+  # Empty = tracing off; trace context still propagates through the stream.
+  otlpEndpoint: ""

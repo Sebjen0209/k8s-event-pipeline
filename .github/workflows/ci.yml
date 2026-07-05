@@ -33,6 +33,24 @@ jobs:
       - uses: actions/checkout@v4
       - run: helm lint deploy/chart/event-pipeline
       - run: helm template smoke deploy/chart/event-pipeline > /dev/null
+      # Render again with the operator-gated extras on, so those templates
+      # don't rot silently behind their feature flags.
+      - run: |
+          helm template smoke deploy/chart/event-pipeline \
+            --set metrics.serviceMonitor.enabled=true \
+            --set metrics.prometheusRule.enabled=true \
+            --set tracing.otlpEndpoint=http://otel-collector:4318 > /dev/null
+
+  # The alert rules are real Prometheus config — promtool proves they parse
+  # and their PromQL type-checks before they ever reach a cluster.
+  alert-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: promtool check rules
+        run: |
+          docker run --rm -v "$PWD:/work" --entrypoint promtool prom/prometheus:v3.1.0 \
+            check rules /work/deploy/chart/event-pipeline/rules/alerts.yaml
 
   # The real proof: build the images, stand up a throwaway Kubernetes cluster
   # inside the runner, deploy the chart, and drive traffic through the whole
@@ -69,6 +87,28 @@ jobs:
           kubectl port-forward svc/ingest-api 18080:80 &
           sleep 3
           bash hack/smoke.sh http://localhost:18080
+
+      # Load test with hard thresholds (p95 < 300ms, <1% failures) — the SLO
+      # is enforced by CI, not just written down in the README.
+      - name: Load test (k6)
+        run: |
+          kubectl port-forward svc/ingest-api 18081:80 &
+          sleep 3
+          docker run --rm --network host -v "$PWD/hack:/scripts" grafana/k6 run \
+            -e BASE_URL=http://localhost:18081 /scripts/load.js
+
+      - name: Pipeline kept up under load
+        run: |
+          kubectl port-forward svc/ingest-api 18082:80 &
+          sleep 3
+          for i in $(seq 1 30); do
+            len=$(curl -fsS http://localhost:18082/v1/stats | jq -r '.total')
+            pending=$(kubectl exec deploy/redis -- redis-cli xpending events aggregators | head -1)
+            echo "aggregated total=$len pending=$pending"
+            if [ "$pending" = "0" ]; then echo "backlog fully drained"; exit 0; fi
+            sleep 2
+          done
+          echo "backlog did not drain after load"; exit 1
 
       - name: Diagnostics on failure
         if: failure()

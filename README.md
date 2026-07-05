@@ -103,6 +103,32 @@ where it would go.
 **202, not 200.** Ingestion is durable enqueue, not synchronous processing.
 The status code tells the client the truth about what has happened so far.
 
+## Observability & day-2 operations
+
+Deploying is day 1. This repo also ships the day-2 story:
+
+- **Distributed tracing (OpenTelemetry)** — one trace follows an event from
+  the HTTP request through the Redis Stream to the worker's aggregate write;
+  the trace context rides inside the stream message, so the async hop doesn't
+  break the trace. Off by default, on with one values flag
+  (`tracing.otlpEndpoint`).
+- **Metrics that answer pager questions** — RED metrics on the API (latency
+  histogram by handler/code), and queue health computed *from Redis* at
+  scrape time (`worker_stream_length`, `worker_stream_pending`,
+  `worker_redis_up`) so the numbers survive worker restarts.
+- **Alert rules as code** — [`rules/alerts.yaml`](deploy/chart/event-pipeline/rules/alerts.yaml)
+  is promtool-validated in CI and shipped as a `PrometheusRule` by the chart.
+  Every alert links a section in the [runbook](docs/runbook.md).
+- **Grafana dashboard as code** — [`deploy/observability/grafana-dashboard.json`](deploy/observability/grafana-dashboard.json).
+- **Load test with teeth** — CI runs [k6](hack/load.js) against the
+  kind-deployed pipeline with hard thresholds (p95 < 300ms, <1% failures) and
+  then verifies the backlog fully drains. The SLO is enforced, not aspirational.
+- **A real postmortem** — I killed Redis under ~190 req/s of load and wrote up
+  [what actually happened](docs/postmortems/001-redis-loss-under-load.md):
+  8-second self-healing, honest data-loss accounting — and a genuine bug the
+  experiment surfaced (worker error-looping on `NOGROUP` after Redis state
+  loss), now fixed with a regression test.
+
 ## What I would change for production
 
 | Demo choice                    | Production choice                                    |
@@ -120,7 +146,11 @@ cmd/ingest-api, cmd/worker    entrypoints (thin: wiring + shutdown)
 internal/api                  HTTP handlers + validation
 internal/worker               consumer-group loop (read → record → ack)
 internal/stream, internal/stats  Redis access, one concern each
-deploy/chart/event-pipeline   Helm chart
-hack/smoke.sh                 e2e used by both `make e2e` and CI
-.github/workflows/ci.yml      lint · unit (race) · helm lint · kind e2e
+internal/telemetry            OpenTelemetry setup + trace propagation through the stream
+deploy/chart/event-pipeline   Helm chart (incl. rules/alerts.yaml → PrometheusRule)
+deploy/observability          Grafana dashboard JSON
+docs/runbook.md               per-alert runbook
+docs/postmortems/             chaos experiment write-ups
+hack/smoke.sh, hack/load.js   e2e + k6 load test, used by `make` and CI
+.github/workflows/ci.yml      lint · unit (race) · helm lint · promtool · kind e2e + load
 ```

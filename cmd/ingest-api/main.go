@@ -20,10 +20,18 @@ import (
 	"github.com/Sebjen0209/k8s-event-pipeline/internal/config"
 	"github.com/Sebjen0209/k8s-event-pipeline/internal/stats"
 	"github.com/Sebjen0209/k8s-event-pipeline/internal/stream"
+	"github.com/Sebjen0209/k8s-event-pipeline/internal/telemetry"
 )
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	stopTracing, err := telemetry.Setup(context.Background(), log, "ingest-api")
+	if err != nil {
+		log.Error("tracing setup failed", "err", err)
+		os.Exit(1)
+	}
+	defer func() { _ = stopTracing(context.Background()) }()
 
 	addr := config.EnvOr("LISTEN_ADDR", ":8080")
 	redisAddr := config.EnvOr("REDIS_ADDR", "localhost:6379")

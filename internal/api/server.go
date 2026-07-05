@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/Sebjen0209/k8s-event-pipeline/internal/stats"
 	"github.com/Sebjen0209/k8s-event-pipeline/internal/stream"
@@ -33,6 +34,7 @@ type Server struct {
 	stats    *stats.Store
 	registry *prometheus.Registry
 	ingested prometheus.Counter
+	duration *prometheus.HistogramVec
 }
 
 func New(log *slog.Logger, rdb *redis.Client, producer *stream.Producer, store *stats.Store, reg *prometheus.Registry) *Server {
@@ -46,19 +48,37 @@ func New(log *slog.Logger, rdb *redis.Client, producer *stream.Producer, store *
 			Name: "ingest_events_total",
 			Help: "Events accepted onto the stream.",
 		}),
+		// RED metrics: rate and errors come from the count-by-code, duration
+		// from the buckets. This histogram feeds the p95/p99 alert rules.
+		duration: promauto.With(reg).NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "ingest_http_request_duration_seconds",
+			Help:    "HTTP request latency by handler and status code.",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 12), // 1ms .. ~4s
+		}, []string{"handler", "method", "code"}),
 	}
 }
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/events", s.handleIngest)
-	mux.HandleFunc("GET /v1/stats", s.handleStats)
+	mux.Handle("POST /v1/events", s.instrument("events", http.HandlerFunc(s.handleIngest)))
+	mux.Handle("GET /v1/stats", s.instrument("stats", http.HandlerFunc(s.handleStats)))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.Handle("GET /metrics", promhttp.HandlerFor(s.registry, promhttp.HandlerOpts{}))
-	return mux
+	// otelhttp wraps the whole mux: one server span per request, joined by
+	// the producer/consumer spans further down the pipeline.
+	return otelhttp.NewHandler(mux, "ingest-api")
+}
+
+// instrument records the request duration labelled by handler, method and
+// final status code.
+func (s *Server) instrument(handler string, next http.Handler) http.Handler {
+	return promhttp.InstrumentHandlerDuration(
+		s.duration.MustCurryWith(prometheus.Labels{"handler": handler}),
+		next,
+	)
 }
 
 type ingestRequest struct {

@@ -6,6 +6,12 @@ import (
 	"context"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/Sebjen0209/k8s-event-pipeline/internal/telemetry"
 )
 
 // Event is one message on the stream. Payload stays an opaque JSON string —
@@ -29,19 +35,37 @@ func NewProducer(rdb *redis.Client, stream string, maxLen int64) *Producer {
 	return &Producer{rdb: rdb, stream: stream, maxLen: maxLen}
 }
 
-// Add appends an event and returns the stream-assigned ID.
+// Add appends an event and returns the stream-assigned ID. The current trace
+// context rides along in the message fields, so the consumer's span joins the
+// same trace across the async boundary.
 func (p *Producer) Add(ctx context.Context, e Event) (string, error) {
-	return p.rdb.XAdd(ctx, &redis.XAddArgs{
+	ctx, span := otel.Tracer("stream").Start(ctx, p.stream+" publish",
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "redis"),
+			attribute.String("messaging.destination.name", p.stream),
+		))
+	defer span.End()
+
+	values := map[string]any{
+		"type":    e.Type,
+		"source":  e.Source,
+		"payload": e.Payload,
+		"ts":      e.TS,
+	}
+	telemetry.Inject(ctx, values)
+
+	id, err := p.rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: p.stream,
 		MaxLen: p.maxLen,
 		Approx: true,
-		Values: map[string]any{
-			"type":    e.Type,
-			"source":  e.Source,
-			"payload": e.Payload,
-			"ts":      e.TS,
-		},
+		Values: values,
 	}).Result()
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "xadd failed")
+	}
+	return id, err
 }
 
 // FromValues rebuilds an Event from the raw field map of a stream message.

@@ -1,0 +1,65 @@
+# Alert rules for the event pipeline. This file is the single source of
+# truth: promtool validates it in CI, and the chart's PrometheusRule template
+# embeds it verbatim via .Files.Get. Every alert links its runbook section.
+groups:
+  - name: event-pipeline
+    rules:
+      - alert: EventPipelineHighErrorRate
+        expr: |
+          sum(rate(ingest_http_request_duration_seconds_count{code=~"5.."}[5m]))
+            /
+          sum(rate(ingest_http_request_duration_seconds_count[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "More than 5% of ingest requests are failing"
+          runbook: "https://github.com/Sebjen0209/k8s-event-pipeline/blob/main/docs/runbook.md#eventpipelinehigherrorrate"
+
+      - alert: EventPipelineSlowIngest
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(ingest_http_request_duration_seconds_bucket{handler="events"}[5m]))
+          ) > 0.25
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: "Ingest p95 latency above 250ms for 10 minutes"
+          runbook: "https://github.com/Sebjen0209/k8s-event-pipeline/blob/main/docs/runbook.md#eventpipelineslowingest"
+
+      - alert: EventPipelineWorkerStalled
+        expr: worker_stream_length > 0 and rate(worker_events_processed_total[5m]) == 0
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "Events are queued but no worker is processing them"
+          runbook: "https://github.com/Sebjen0209/k8s-event-pipeline/blob/main/docs/runbook.md#eventpipelineworkerstalled"
+
+      - alert: EventPipelineBacklogHigh
+        expr: worker_stream_length > 50000
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: "Stream backlog above 50k — consumers are not keeping up"
+          runbook: "https://github.com/Sebjen0209/k8s-event-pipeline/blob/main/docs/runbook.md#eventpipelinebackloghigh"
+
+      - alert: EventPipelinePendingStuck
+        expr: worker_stream_pending > 1000
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: "Delivered-but-unacked messages piling up (consumer dying mid-batch?)"
+          runbook: "https://github.com/Sebjen0209/k8s-event-pipeline/blob/main/docs/runbook.md#eventpipelinependingstuck"
+
+      - alert: EventPipelineRedisDown
+        expr: worker_redis_up == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "Workers cannot reach Redis"
+          runbook: "https://github.com/Sebjen0209/k8s-event-pipeline/blob/main/docs/runbook.md#eventpipelineredisdown"

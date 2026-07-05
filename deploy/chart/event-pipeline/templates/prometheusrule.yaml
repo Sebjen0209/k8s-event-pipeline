@@ -1,0 +1,12 @@
+{{- if .Values.metrics.prometheusRule.enabled }}
+# The rule groups live in rules/alerts.yaml (validated by promtool in CI) and
+# are embedded here unchanged — one source of truth, two consumers.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: event-pipeline
+  labels:
+    {{- include "event-pipeline.labels" . | nindent 4 }}
+spec:
+  {{- .Files.Get "rules/alerts.yaml" | fromYaml | toYaml | nindent 2 }}
+{{- end }}

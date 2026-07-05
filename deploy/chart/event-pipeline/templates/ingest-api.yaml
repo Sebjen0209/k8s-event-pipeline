@@ -40,6 +40,10 @@ spec:
               value: {{ .Values.stream.name | quote }}
             - name: STREAM_MAXLEN
               value: {{ .Values.stream.maxLen | quote }}
+            {{- if .Values.tracing.otlpEndpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.tracing.otlpEndpoint | quote }}
+            {{- end }}
           # Liveness only checks the process; readiness also checks Redis so a
           # pod that lost its backend is pulled from the Service, not restarted.
           livenessProbe:
